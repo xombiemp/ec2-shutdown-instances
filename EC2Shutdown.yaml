@@ -1,0 +1,80 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create Lambda function that shutsdown EC2 instances
+Resources:
+  EC2ShutdownFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Shutdown running EC2 instances daily 
+      Code:
+        ZipFile: |
+          from boto3 import resource
+
+          def get_running_instances(ec2):
+              collection_filter = [
+                  {
+                      "Name": "instance-state-name",
+                      "Values": ["running"]
+                  }
+              ]
+              collection = ec2.instances.filter(Filters=collection_filter)
+              return list(collection)
+
+          def lambda_handler(event, context):
+              ec2 = resource("ec2", region_name=event["region"])
+              instances = get_running_instances(ec2)
+              if instances:
+                  for instance in instances:
+                      tags = instance.tags
+                      for tag in tags:
+                          if tag["Key"] == "Name":
+                              print("Stopping {} - {}".format(instance.instance_id, tag["Value"]))
+                              break
+                      instance.stop()
+              else:
+                  print("No running instances found in {}".format(event["region"]))
+      Handler: index.lambda_handler
+      Role: !GetAtt EC2ShutdownFunctionExecutionRole.Arn
+      Runtime: python3.6
+      Timeout: '60'
+  EC2ShutdownFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - ec2:DescribeInstances
+            - ec2:StopInstances
+            Resource: '*'
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EC2ShutdownFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EC2ShutdownRule.Arn
+  EC2ShutdownRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Call EC2 Shutdown Function everyday at 9pm Mountain
+      ScheduleExpression: cron(0 3 ? * * *)
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt EC2ShutdownFunction.Arn
+        Id: EC2ShutdownFunction
